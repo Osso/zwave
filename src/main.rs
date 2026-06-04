@@ -237,7 +237,7 @@ async fn cmd_remove_failed(client: &mut ZwaveClient, raw_json: bool, node_id: u3
     let failed = client
         .command("controller.is_failed_node", json!({ "nodeId": node_id }))
         .await?;
-    if failed.get("result").and_then(Value::as_bool) != Some(true) {
+    if !is_failed_node_result(&failed) {
         bail!("node {node_id} is not marked failed by the controller");
     }
 
@@ -323,6 +323,11 @@ fn value_bool(value: &Value, key: &str) -> bool {
 
 fn value_u64(value: &Value, key: &str) -> u64 {
     value.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn is_failed_node_result(value: &Value) -> bool {
+    value.pointer("/result/failed").and_then(Value::as_bool) == Some(true)
+        || value.get("result").and_then(Value::as_bool) == Some(true)
 }
 
 fn summarize_network(nodes: &[Value]) -> NetworkSummary {
