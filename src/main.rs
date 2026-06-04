@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const DEFAULT_URL: &str = "ws://zwave-api.localdomain/";
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Parser)]
 #[command(name = "zwave")]
@@ -278,7 +279,7 @@ async fn read_json(
     >,
 ) -> Result<Value> {
     loop {
-        let message = tokio::time::timeout(Duration::from_secs(30), socket.next())
+        let message = tokio::time::timeout(READ_TIMEOUT, socket.next())
             .await
             .context("websocket read timed out")?
             .ok_or_else(|| anyhow!("websocket closed"))??;
