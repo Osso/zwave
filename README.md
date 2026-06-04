@@ -11,14 +11,8 @@ The default endpoint is `ws://zwave-api.localdomain/`. Override it with
 ./deploy.sh
 ```
 
-By default, `deploy.sh` installs with `cargo install` into
-`/syncthing/Sync/Provisioning/bin`.
-
-For a normal Cargo install:
-
-```bash
-cargo install --path .
-```
+`deploy.sh` installs with `cargo install` into Cargo's default binary directory,
+usually `~/.cargo/bin`.
 
 ## Usage
 
