@@ -1,3 +1,5 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -46,6 +48,20 @@ enum Commands {
     RemoveFailed { node_id: u32 },
     /// Start route rebuilding
     RebuildRoutes,
+    /// Start classic inclusion and print controller events
+    Include {
+        /// Seconds to wait before stopping inclusion
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+    },
+    /// Call a Z-Wave JS Server command with a JSON payload
+    Call {
+        /// Command name, for example controller.get_node_neighbors
+        command: String,
+        /// JSON object payload
+        #[arg(long, default_value = "{}")]
+        payload: String,
+    },
 }
 
 struct ZwaveClient {
@@ -61,6 +77,7 @@ struct NetworkSummary {
 }
 
 #[tokio::main]
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut client = ZwaveClient::connect(&cli.url).await?;
@@ -79,10 +96,15 @@ async fn main() -> Result<()> {
             cmd_remove_failed(&mut client, cli.json, node_id).await
         }
         Commands::RebuildRoutes => cmd_rebuild_routes(&mut client, cli.json).await,
+        Commands::Include { timeout } => cmd_include(&mut client, cli.json, timeout).await,
+        Commands::Call { command, payload } => {
+            cmd_call(&mut client, cli.json, &command, &payload).await
+        }
     }
 }
 
 impl ZwaveClient {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn connect(url: &str) -> Result<Self> {
         let (mut socket, _) = connect_async(url)
             .await
@@ -112,6 +134,7 @@ impl ZwaveClient {
         Ok(Self { socket, next_id: 1 })
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     async fn command(&mut self, command: &str, mut payload: Value) -> Result<Value> {
         let message_id = format!("m{}", self.next_id);
         self.next_id += 1;
@@ -135,6 +158,7 @@ impl ZwaveClient {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn cmd_status(client: &mut ZwaveClient, raw_json: bool) -> Result<()> {
     let state = start_listening(client).await?;
     if raw_json {
@@ -173,6 +197,7 @@ async fn cmd_status(client: &mut ZwaveClient, raw_json: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn cmd_nodes(client: &mut ZwaveClient, raw_json: bool, dead_only: bool) -> Result<()> {
     let state = start_listening(client).await?;
     let nodes = state
@@ -210,6 +235,7 @@ async fn cmd_nodes(client: &mut ZwaveClient, raw_json: bool, dead_only: bool) ->
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn cmd_simple_node(
     client: &mut ZwaveClient,
     raw_json: bool,
@@ -222,6 +248,7 @@ async fn cmd_simple_node(
     print_result(raw_json, &result)
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn cmd_simple_controller(
     client: &mut ZwaveClient,
     raw_json: bool,
@@ -234,6 +261,7 @@ async fn cmd_simple_controller(
     print_result(raw_json, &result)
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn cmd_remove_failed(client: &mut ZwaveClient, raw_json: bool, node_id: u32) -> Result<()> {
     let failed = client
         .command("controller.is_failed_node", json!({ "nodeId": node_id }))
@@ -251,6 +279,7 @@ async fn cmd_remove_failed(client: &mut ZwaveClient, raw_json: bool, node_id: u3
     print_result(raw_json, &result)
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn cmd_rebuild_routes(client: &mut ZwaveClient, raw_json: bool) -> Result<()> {
     let result = client
         .command("controller.begin_rebuilding_routes", json!({}))
@@ -258,10 +287,64 @@ async fn cmd_rebuild_routes(client: &mut ZwaveClient, raw_json: bool) -> Result<
     print_result(raw_json, &result)
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
+async fn cmd_include(client: &mut ZwaveClient, raw_json: bool, timeout: u64) -> Result<()> {
+    let result = client
+        .command("controller.begin_inclusion", json!({}))
+        .await
+        .context("start inclusion")?;
+    print_result(raw_json, &result)?;
+    eprintln!("Inclusion started; listening for {timeout}s...");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        match tokio::time::timeout_at(deadline, read_json(&mut client.socket)).await {
+            Ok(Ok(value)) => print_inclusion_event(raw_json, &value)?,
+            Ok(Err(err)) => return Err(err).context("read inclusion event"),
+            Err(_) => break,
+        }
+    }
+
+    match client.command("controller.stop_inclusion", json!({})).await {
+        Ok(result) => {
+            eprintln!("Inclusion stopped.");
+            print_result(raw_json, &result)
+        }
+        Err(err) => Err(err).context("stop inclusion"),
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+async fn cmd_call(
+    client: &mut ZwaveClient,
+    raw_json: bool,
+    command: &str,
+    payload: &str,
+) -> Result<()> {
+    let payload = parse_call_payload(payload)?;
+    let result = client.command(command, payload).await?;
+    print_result(raw_json, &result)
+}
+
+fn parse_call_payload(payload: &str) -> Result<Value> {
+    let value: Value = serde_json::from_str(payload).context("parse payload JSON")?;
+    if !value.is_object() {
+        bail!("payload must be a JSON object");
+    }
+    Ok(value)
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn start_listening(client: &mut ZwaveClient) -> Result<Value> {
     client.command("start_listening", json!({})).await
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn print_result(raw_json: bool, result: &Value) -> Result<()> {
     if raw_json {
         println!("{}", serde_json::to_string_pretty(result)?);
@@ -273,6 +356,41 @@ fn print_result(raw_json: bool, result: &Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
+fn print_inclusion_event(raw_json: bool, value: &Value) -> Result<()> {
+    if raw_json {
+        println!("{}", serde_json::to_string_pretty(value)?);
+        return Ok(());
+    }
+
+    println!("{}", format_inclusion_event(value));
+    Ok(())
+}
+
+fn format_inclusion_event(value: &Value) -> String {
+    let event = value
+        .get("event")
+        .or_else(|| value.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("message");
+    let node_id = value
+        .pointer("/node/nodeId")
+        .or_else(|| value.get("nodeId"))
+        .and_then(Value::as_u64);
+    let status = value
+        .get("status")
+        .or_else(|| value.get("result"))
+        .and_then(Value::as_str);
+
+    match (node_id, status) {
+        (Some(node_id), Some(status)) => format!("{event}: node={node_id} status={status}"),
+        (Some(node_id), None) => format!("{event}: node={node_id}"),
+        (None, Some(status)) => format!("{event}: status={status}"),
+        (None, None) => format!("{event}: {value}"),
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn read_json(
     socket: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -293,6 +411,7 @@ async fn read_json(
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 async fn wait_for_message(
     socket: &mut tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -408,4 +527,128 @@ fn format_counts(counts: &BTreeMap<String, usize>) -> String {
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn parse_call_payload_accepts_json_objects_only() {
+        assert_eq!(
+            parse_call_payload(r#"{"nodeId": 7}"#).expect("object"),
+            json!({"nodeId": 7})
+        );
+        assert!(parse_call_payload("[1,2]").is_err());
+        assert!(parse_call_payload("not json").is_err());
+    }
+
+    #[test]
+    fn ensure_success_accepts_true_and_reports_message() {
+        assert!(ensure_success(&json!({"success": true})).is_ok());
+
+        let err = ensure_success(&json!({"success": false, "message": "bad"}))
+            .expect_err("failure")
+            .to_string();
+        assert_eq!(err, "bad");
+    }
+
+    #[test]
+    fn value_helpers_default_missing_or_wrong_types() {
+        let value = json!({"ready": true, "count": 42});
+
+        assert!(value_bool(&value, "ready"));
+        assert!(!value_bool(&value, "missing"));
+        assert_eq!(value_u64(&value, "count"), 42);
+        assert_eq!(value_u64(&value, "ready"), 0);
+    }
+
+    #[test]
+    fn failed_node_result_accepts_nested_or_plain_result() {
+        assert!(is_failed_node_result(&json!({"result": {"failed": true}})));
+        assert!(is_failed_node_result(&json!({"result": true})));
+        assert!(!is_failed_node_result(
+            &json!({"result": {"failed": false}})
+        ));
+    }
+
+    #[test]
+    fn summarize_network_counts_ready_and_status_names() {
+        let nodes = vec![
+            json!({"ready": true, "status": 4}),
+            json!({"ready": false, "status": 3}),
+            json!({"ready": false, "status": 99}),
+            json!({"ready": false}),
+        ];
+
+        let summary = summarize_network(&nodes);
+
+        assert_eq!(summary.ready_nodes, 1);
+        assert_eq!(summary.status_counts["alive"], 1);
+        assert_eq!(summary.status_counts["dead"], 1);
+        assert_eq!(summary.status_counts["99"], 1);
+        assert_eq!(summary.status_counts["unknown"], 1);
+        assert_eq!(
+            format_counts(&summary.status_counts),
+            "99=1 alive=1 dead=1 unknown=1"
+        );
+    }
+
+    #[test]
+    fn controller_helpers_format_defaults() {
+        const HOME_ID: u64 = 0x1abc;
+        let controller = json!({"firmwareVersion": "1.2.3", "homeId": HOME_ID});
+
+        assert_eq!(controller_firmware(&controller), "1.2.3");
+        assert_eq!(controller_home_id(&controller), "00001abc");
+        assert_eq!(controller_firmware(&json!({})), "unknown");
+        assert_eq!(controller_home_id(&json!({})), "unknown");
+    }
+
+    #[test]
+    fn node_label_prefers_name_then_device_config() {
+        assert_eq!(
+            node_label(&json!({
+                "name": "Front Door",
+                "deviceConfig": {"manufacturer": "Zooz", "label": "Sensor"}
+            })),
+            "Front Door (Zooz Sensor)"
+        );
+        assert_eq!(node_label(&json!({"name": "Front Door"})), "Front Door");
+        assert_eq!(
+            node_label(&json!({"deviceConfig": {"manufacturer": "Zooz", "label": "Sensor"}})),
+            "Zooz Sensor"
+        );
+        assert_eq!(node_label(&json!({})), "-");
+    }
+
+    #[test]
+    fn format_inclusion_event_uses_available_fields() {
+        assert_eq!(
+            format_inclusion_event(&json!({
+                "event": "node added",
+                "node": {"nodeId": 12},
+                "status": "done"
+            })),
+            "node added: node=12 status=done"
+        );
+        assert_eq!(
+            format_inclusion_event(&json!({"type": "step", "nodeId": 13})),
+            "step: node=13"
+        );
+        assert_eq!(
+            format_inclusion_event(&json!({"event": "done", "result": "ok"})),
+            "done: status=ok"
+        );
+        assert_eq!(
+            format_inclusion_event(&json!({"payload": true})),
+            r#"message: {"payload":true}"#
+        );
+    }
+
+    #[test]
+    fn clap_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
 }
